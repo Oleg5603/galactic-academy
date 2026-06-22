@@ -168,18 +168,24 @@ class GalacticAcademy(ctk.CTk):
                 start = end
 
     def _ask_expert(self, char_id: str):
+        if not self.chapters:
+            messagebox.showwarning("Нет PDF", "Сначала загрузи PDF через кнопку вверху!")
+            return
         self.active_char = char_id
         char = CHARACTERS[char_id]
         self.char_name_label.configure(text=f"{char['emoji']} {char['name']} говорит:")
-        sel = self.text_box.tag_ranges("sel")
-        text = self.text_box.get(sel[0], sel[1]) if sel else self.chapters[self.current_chapter]["text"]
+        try:
+            sel = self.text_box.tag_ranges("sel")
+            text = self.text_box.get(sel[0], sel[1]) if sel else self.chapters[self.current_chapter]["text"]
+        except Exception:
+            text = self.chapters[self.current_chapter]["text"]
         self.response_text.delete("1.0", "end")
         self.response_text.insert("1.0", "⏳ Думаю...")
         threading.Thread(target=self._get_response_bg, args=(char_id, text, ""), daemon=True).start()
 
     def _ask_question(self):
         q = self.question_entry.get().strip()
-        if not q:
+        if not q or not self.chapters:
             return
         text = self.chapters[self.current_chapter]["text"]
         self.response_text.delete("1.0", "end")
@@ -187,12 +193,32 @@ class GalacticAcademy(ctk.CTk):
         threading.Thread(target=self._get_response_bg, args=(self.active_char, text, q), daemon=True).start()
 
     def _get_response_bg(self, char_id, text, question):
-        response = ask_character(char_id, text, question)
+        try:
+            response = ask_character(char_id, text, question)
+        except Exception as e:
+            response = f"⚠️ Ошибка: {e}"
         self.after(0, lambda: self._show_response(response, char_id))
 
     def _show_response(self, response, char_id):
         self.response_text.delete("1.0", "end")
         self.response_text.insert("1.0", response)
+        char = CHARACTERS[char_id]
+        # Простое надёжное окно
+        win = tk.Toplevel(self)
+        win.title(f"{char['emoji']} {char['name']}")
+        win.geometry("620x420")
+        win.attributes("-topmost", True)
+        win.configure(bg="#1c1c1c")
+        tk.Label(win, text=f"{char['emoji']} {char['name']}", bg="#1c1c1c", fg="white",
+                 font=("Arial", 14, "bold")).pack(pady=10)
+        txt = tk.Text(win, wrap="word", bg="#2b2b2b", fg="#e0e0e0",
+                      font=("Arial", 13), padx=12, pady=12, borderwidth=0)
+        txt.pack(fill="both", expand=True, padx=10)
+        txt.insert("1.0", response)
+        txt.config(state="disabled")
+        tk.Button(win, text="Закрыть", command=win.destroy,
+                  bg="#1f6aa5", fg="white", font=("Arial", 12),
+                  relief="flat", padx=20, pady=6).pack(pady=10)
         threading.Thread(target=self._play_voice, args=(response, char_id), daemon=True).start()
 
     def _play_voice(self, text, char_id):

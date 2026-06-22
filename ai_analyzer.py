@@ -1,14 +1,23 @@
-import anthropic
 import httpx
-from httpx_socks import SyncProxyTransport
 import os
+import json as _json
 
-_transport = SyncProxyTransport.from_url("socks4://127.0.0.1:10808")
-_http = httpx.Client(transport=_transport, timeout=30)
-client = anthropic.Anthropic(
-    api_key=os.getenv("ANTHROPIC_API_KEY", ""),
-    http_client=_http,
-)
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+GROQ_MODEL = "llama-3.1-8b-instant"
+GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
+
+_http = httpx.Client(trust_env=False, timeout=30)
+
+
+def _groq(system: str, user: str, max_tokens: int = 600) -> str:
+    r = _http.post(
+        GROQ_URL,
+        headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
+        json={"model": GROQ_MODEL, "max_tokens": max_tokens,
+              "messages": [{"role": "system", "content": system},
+                           {"role": "user", "content": user}]},
+    )
+    return r.json()["choices"][0]["message"]["content"]
 
 CHARACTERS = {
     "yoda": {
@@ -60,43 +69,48 @@ CHARACTERS = {
 
 
 def analyze_chapter(text: str) -> dict:
-    """Йода анализирует главу: цель, ключевые моменты, доп. инфо."""
-    msg = client.messages.create(
-        model="claude-haiku-4-5-20251001",
-        max_tokens=800,
-        messages=[{
-            "role": "user",
-            "content": (
-                f"Проанализируй учебный текст и верни JSON:\n"
-                f'{{"goal": "цель урока одним предложением", '
-                f'"key_points": ["тезис1", "тезис2", "тезис3"], '
-                f'"keywords": ["слово1", "слово2", "слово3", "слово4", "слово5"]}}\n\n'
-                f"ТЕКСТ:\n{text[:3000]}"
-            )
-        }]
-    )
-    import json, re
-    raw = msg.content[0].text
-    match = re.search(r'\{.*\}', raw, re.DOTALL)
-    if match:
-        try:
-            return json.loads(match.group())
-        except Exception:
-            pass
-    return {"goal": "Изучить материал", "key_points": [], "keywords": []}
+    """Анализирует главу через Groq, при ошибке — локально."""
+    if not GROQ_API_KEY:
+        return _analyze_local(text)
+    try:
+        import re
+        raw = _groq(
+            "Ты учебный ассистент. Отвечай только JSON без пояснений.",
+            f'Проанализируй текст и верни JSON:\n{{"goal":"цель одним предложением","key_points":["тезис1","тезис2","тезис3"],"keywords":["слово1","слово2","слово3","слово4","слово5"]}}\n\nТЕКСТ:\n{text[:2000]}',
+            800
+        )
+        match = re.search(r'\{.*\}', raw, re.DOTALL)
+        if match:
+            return _json.loads(match.group())
+    except Exception:
+        pass
+    return _analyze_local(text)
+
+
+def _analyze_local(text: str) -> dict:
+    """Локальный анализ без API — частотные слова."""
+    import re
+    from collections import Counter
+    words = re.findall(r'[а-яёА-ЯЁa-zA-Z]{5,}', text)
+    stop = {"этого","этом","этот","которые","который","которая","более","также",
+            "можно","нужно","такие","такой","после","через","между","очень",
+            "когда","потому","будет","может","всего","своей","своего","своих"}
+    freq = Counter(w.lower() for w in words if w.lower() not in stop)
+    keywords = [w for w, _ in freq.most_common(7)]
+    sentences = [s.strip() for s in re.split(r'[.!?]', text) if len(s.strip()) > 40]
+    goal = sentences[0][:120] if sentences else "Изучить материал"
+    return {"goal": goal, "key_points": sentences[1:4], "keywords": keywords}
 
 
 def ask_character(character_id: str, text: str, question: str = "") -> str:
     """Персонаж отвечает на вопрос по тексту."""
     char = CHARACTERS.get(character_id, CHARACTERS["yoda"])
+    if not GROQ_API_KEY:
+        return "⚠️ Добавь GROQ_API_KEY в файл .env\nБесплатный ключ: console.groq.com"
     user_msg = f"ТЕКСТ ПАРАГРАФА:\n{text[:2000]}"
     if question:
         user_msg += f"\n\nВОПРОС СТУДЕНТА: {question}"
-
-    msg = client.messages.create(
-        model="claude-haiku-4-5-20251001",
-        max_tokens=600,
-        system=char["prompt"],
-        messages=[{"role": "user", "content": user_msg}]
-    )
-    return msg.content[0].text
+    try:
+        return _groq(char["prompt"], user_msg, 600)
+    except Exception as e:
+        return f"⚠️ Ошибка: {str(e)[:150]}"
