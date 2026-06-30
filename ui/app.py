@@ -41,6 +41,29 @@ class GalacticAcademy(ctk.CTk):
         self.title_label = ctk.CTkLabel(top, text="Загрузите учебник...", font=("Arial", 16, "bold"))
         self.title_label.pack(side="left", padx=20)
 
+        # Нижняя панель — ответ персонажа (пакуем ДО main, иначе expand=True выталкивает за экран)
+        self.response_frame = ctk.CTkFrame(self, height=240)
+        self.response_frame.pack(side="bottom", fill="x", padx=10, pady=(0, 10))
+        self.response_frame.pack_propagate(False)
+
+        self.char_name_label = ctk.CTkLabel(self.response_frame, text="", font=("Arial", 13, "bold"))
+        self.char_name_label.pack(anchor="w", padx=15, pady=(8, 0))
+        self.response_text = ctk.CTkTextbox(self.response_frame, height=130, wrap="word",
+                                             font=("Arial", 12))
+        self.response_text.pack(fill="x", padx=10, pady=(5, 0))
+
+        q_frame = ctk.CTkFrame(self.response_frame)
+        q_frame.pack(fill="x", padx=10, pady=8)
+        self.question_entry = ctk.CTkEntry(q_frame, placeholder_text="Задай вопрос персонажу...",
+                                            height=36, font=("Arial", 13))
+        self.question_entry.pack(side="left", fill="x", expand=True, padx=(0, 10))
+        self.active_char = "yoda"
+        ctk.CTkButton(q_frame, text="Спросить", command=self._ask_question,
+                      width=110, height=36).pack(side="left")
+        ctk.CTkButton(q_frame, text="⏹", command=self._stop_voice,
+                      width=36, height=36, fg_color="#555555", hover_color="#333333").pack(side="left", padx=(6, 0))
+        self.question_entry.bind("<Return>", lambda e: self._ask_question())
+
         # Основная область
         main = ctk.CTkFrame(self)
         main.pack(fill="both", expand=True, padx=10, pady=10)
@@ -74,7 +97,7 @@ class GalacticAcademy(ctk.CTk):
         # Текст главы
         self.text_box = tk.Text(center, wrap="word", bg="#1c1c1c", fg="#e0e0e0",
                                  font=("Arial", 13), padx=15, pady=15, borderwidth=0,
-                                 selectbackground="#2a5a8a")
+                                 selectbackground="#2a5a8a", state="disabled", cursor="arrow")
         self.text_box.pack(fill="both", expand=True, padx=5, pady=5)
         self.text_box.tag_config("highlight", background="#3a5a2a", foreground="#90ee90")
 
@@ -83,35 +106,21 @@ class GalacticAcademy(ctk.CTk):
         right.pack(side="right", fill="y", padx=(10, 0))
         right.pack_propagate(False)
 
-        ctk.CTkLabel(right, text="👾 Эксперты", font=("Arial", 14, "bold")).pack(pady=10)
+        ctk.CTkLabel(right, text="👾 Эксперты", font=("Arial", 14, "bold")).pack(pady=4)
         for char_id, char in CHARACTERS.items():
             btn = ctk.CTkButton(
                 right, text=f"{char['emoji']} {char['name']}",
                 fg_color=CHAR_COLORS[char_id],
                 hover_color=CHAR_COLORS[char_id],
                 command=lambda c=char_id: self._ask_expert(c),
-                width=180, height=50
+                width=180, height=40
             )
-            btn.pack(padx=10, pady=5)
+            btn.pack(padx=10, pady=(3, 0))
+            ctk.CTkLabel(
+                right, text=char.get("hint", ""),
+                font=("Arial", 10), text_color="#888888"
+            ).pack(pady=(1, 2))
 
-        # Нижняя панель — ответ персонажа
-        self.response_frame = ctk.CTkFrame(self, height=180)
-        self.response_frame.pack(fill="x", padx=10, pady=(0, 10))
-        self.response_frame.pack_propagate(False)
-
-        self.char_name_label = ctk.CTkLabel(self.response_frame, text="", font=("Arial", 13, "bold"))
-        self.char_name_label.pack(anchor="w", padx=15, pady=(8, 0))
-        self.response_text = ctk.CTkTextbox(self.response_frame, height=130, wrap="word",
-                                             font=("Arial", 12))
-        self.response_text.pack(fill="x", padx=10, pady=5)
-
-        # Поле вопроса
-        q_frame = ctk.CTkFrame(self.response_frame)
-        q_frame.pack(fill="x", padx=10, pady=(0, 5))
-        self.question_entry = ctk.CTkEntry(q_frame, placeholder_text="Задай вопрос персонажу...", width=400)
-        self.question_entry.pack(side="left", padx=(0, 10))
-        self.active_char = "yoda"
-        ctk.CTkButton(q_frame, text="Спросить", command=self._ask_question, width=100).pack(side="left")
 
     def _load_pdf(self):
         path = filedialog.askopenfilename(filetypes=[("PDF файлы", "*.pdf")])
@@ -137,8 +146,10 @@ class GalacticAcademy(ctk.CTk):
     def _show_chapter(self, idx):
         self.current_chapter = idx
         ch = self.chapters[idx]
+        self.text_box.config(state="normal")
         self.text_box.delete("1.0", "end")
         self.text_box.insert("1.0", ch["text"])
+        self.text_box.config(state="disabled")
         self.goal_label.configure(text="⏳ Анализирую...")
         self.update()
         threading.Thread(target=self._analyze_bg, args=(ch,), daemon=True).start()
@@ -156,6 +167,7 @@ class GalacticAcademy(ctk.CTk):
         self._highlight_keywords(keys)
 
     def _highlight_keywords(self, keywords):
+        self.text_box.config(state="normal")
         self.text_box.tag_remove("highlight", "1.0", "end")
         for word in keywords:
             start = "1.0"
@@ -166,6 +178,7 @@ class GalacticAcademy(ctk.CTk):
                 end = f"{pos}+{len(word)}c"
                 self.text_box.tag_add("highlight", pos, end)
                 start = end
+        self.text_box.config(state="disabled")
 
     def _ask_expert(self, char_id: str):
         if not self.chapters:
@@ -185,9 +198,9 @@ class GalacticAcademy(ctk.CTk):
 
     def _ask_question(self):
         q = self.question_entry.get().strip()
-        if not q or not self.chapters:
+        if not q:
             return
-        text = self.chapters[self.current_chapter]["text"]
+        text = self.chapters[self.current_chapter]["text"] if self.chapters else ""
         self.response_text.delete("1.0", "end")
         self.response_text.insert("1.0", "⏳ Думаю...")
         threading.Thread(target=self._get_response_bg, args=(self.active_char, text, q), daemon=True).start()
@@ -220,6 +233,10 @@ class GalacticAcademy(ctk.CTk):
                   bg="#1f6aa5", fg="white", font=("Arial", 12),
                   relief="flat", padx=20, pady=6).pack(pady=10)
         threading.Thread(target=self._play_voice, args=(response, char_id), daemon=True).start()
+
+    def _stop_voice(self):
+        from tts.voice import stop
+        stop()
 
     def _play_voice(self, text, char_id):
         try:

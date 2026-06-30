@@ -1,28 +1,61 @@
-import httpx
 import os
+import re
 import json as _json
+import requests as _req
 
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
-GROQ_MODEL = "llama-3.1-8b-instant"
-GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
+def _spellfix(text: str) -> str:
+    """Исправляет очевидные орфографические ошибки в русском тексте."""
+    try:
+        from spellchecker import SpellChecker
+        spell = SpellChecker(language="ru")
+        def fix_word(m):
+            w = m.group(0)
+            if not re.search(r'[а-яёА-ЯЁ]', w):
+                return w
+            lower = w.lower()
+            correction = spell.correction(lower)
+            if correction and correction != lower:
+                return correction[0].upper() + correction[1:] if w[0].isupper() else correction
+            return w
+        return re.sub(r'\b[а-яёА-ЯЁ]{3,}\b', fix_word, text)
+    except Exception:
+        return text
 
-_http = httpx.Client(trust_env=False, timeout=30)
+_API_URL = "https://openrouter.ai/api/v1/chat/completions"
+_API_MODEL = "openrouter/free"
+_API_KEY = ""  # задаётся через OPENROUTER_API_KEY в .env
+
+# Сессия с автодетектом системного прокси (VPN/прокси на ПК)
+_session = _req.Session()
 
 
-def _groq(system: str, user: str, max_tokens: int = 600) -> str:
-    r = _http.post(
-        GROQ_URL,
-        headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
-        json={"model": GROQ_MODEL, "max_tokens": max_tokens,
-              "messages": [{"role": "system", "content": system},
+_LANG_RULE = "\n\nОБЯЗАТЕЛЬНО: отвечай только на грамотном русском языке, без опечаток и ошибок."
+
+
+def _llm(system: str, user: str, max_tokens: int = 800) -> str:
+    key = os.getenv("OPENROUTER_API_KEY", "") or _API_KEY
+    r = _session.post(
+        _API_URL,
+        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+        json={"model": _API_MODEL, "max_tokens": max_tokens,
+              "messages": [{"role": "system", "content": system + _LANG_RULE},
                            {"role": "user", "content": user}]},
+        timeout=30,
     )
-    return r.json()["choices"][0]["message"]["content"]
+    data = r.json()
+    if "error" in data:
+        msg = data["error"].get("message", str(data["error"]))
+        raise RuntimeError(f"API [{r.status_code}]: {msg}")
+    if "choices" not in data or not data["choices"]:
+        raise RuntimeError(f"Нет ответа: {str(data)[:200]}")
+    return data["choices"][0]["message"]["content"]
+
 
 CHARACTERS = {
     "yoda": {
         "name": "Мастер Йода",
         "emoji": "🟢",
+        "hint": "3-5 ключевых тезиса",
         "prompt": (
             "Ты — Мастер Йода. Говоришь как Йода: инверсия слов, мудрость, краткость. "
             "Выдели ТОЛЬКО 3-5 ключевых тезиса из текста. Каждый начинай с '→'. "
@@ -32,6 +65,7 @@ CHARACTERS = {
     "vader": {
         "name": "Дарт Вейдер",
         "emoji": "⚫",
+        "hint": "3 вопроса для проверки",
         "prompt": (
             "Ты — Дарт Вейдер. Требовательно, с угрозой, но по делу. "
             "Задай 3 вопроса для проверки понимания текста. "
@@ -41,6 +75,7 @@ CHARACTERS = {
     "r2d2": {
         "name": "R2-D2",
         "emoji": "🔵",
+        "hint": "Сложное — простыми словами",
         "prompt": (
             "Ты — R2-D2 с переводчиком. Найди 2-3 самых сложных момента в тексте "
             "и объясни каждый ОЧЕНЬ простыми словами. Начинай каждый с '⚡ СЛОЖНЫЙ МОМЕНТ:'. "
@@ -50,6 +85,7 @@ CHARACTERS = {
     "c3po": {
         "name": "C-3PO",
         "emoji": "🟡",
+        "hint": "Термины и определения",
         "prompt": (
             "Ты — C-3PO, протокольный дроид. Вежливо и многословно объясни основные термины "
             "и понятия из текста. Для каждого термина: сначала официальное определение, "
@@ -59,6 +95,7 @@ CHARACTERS = {
     "obi": {
         "name": "Оби-Ван Кеноби",
         "emoji": "🔵",
+        "hint": "Зачем это в жизни",
         "prompt": (
             "Ты — Оби-Ван Кеноби. Мудро и с перспективой объясни КАК этот материал "
             "связан с реальной жизнью и зачем его знать. Дай исторический контекст если уместно. "
@@ -69,15 +106,11 @@ CHARACTERS = {
 
 
 def analyze_chapter(text: str) -> dict:
-    """Анализирует главу через Groq, при ошибке — локально."""
-    if not GROQ_API_KEY:
-        return _analyze_local(text)
     try:
         import re
-        raw = _groq(
+        raw = _llm(
             "Ты учебный ассистент. Отвечай только JSON без пояснений.",
             f'Проанализируй текст и верни JSON:\n{{"goal":"цель одним предложением","key_points":["тезис1","тезис2","тезис3"],"keywords":["слово1","слово2","слово3","слово4","слово5"]}}\n\nТЕКСТ:\n{text[:2000]}',
-            800
         )
         match = re.search(r'\{.*\}', raw, re.DOTALL)
         if match:
@@ -88,7 +121,6 @@ def analyze_chapter(text: str) -> dict:
 
 
 def _analyze_local(text: str) -> dict:
-    """Локальный анализ без API — частотные слова."""
     import re
     from collections import Counter
     words = re.findall(r'[а-яёА-ЯЁa-zA-Z]{5,}', text)
@@ -103,14 +135,11 @@ def _analyze_local(text: str) -> dict:
 
 
 def ask_character(character_id: str, text: str, question: str = "") -> str:
-    """Персонаж отвечает на вопрос по тексту."""
     char = CHARACTERS.get(character_id, CHARACTERS["yoda"])
-    if not GROQ_API_KEY:
-        return "⚠️ Добавь GROQ_API_KEY в файл .env\nБесплатный ключ: console.groq.com"
     user_msg = f"ТЕКСТ ПАРАГРАФА:\n{text[:2000]}"
     if question:
         user_msg += f"\n\nВОПРОС СТУДЕНТА: {question}"
     try:
-        return _groq(char["prompt"], user_msg, 600)
+        return _spellfix(_llm(char["prompt"], user_msg))
     except Exception as e:
-        return f"⚠️ Ошибка: {str(e)[:150]}"
+        return f"⚠️ Ошибка: {str(e)[:250]}"
