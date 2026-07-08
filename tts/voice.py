@@ -32,9 +32,16 @@ _mci = ctypes.windll.winmm.mciSendStringW
 
 
 def stop():
-    """Остановить воспроизведение."""
     _mci(f'stop {_MCI_ALIAS}', None, 0, None)
     _mci(f'close {_MCI_ALIAS}', None, 0, None)
+
+
+def pause():
+    _mci(f'pause {_MCI_ALIAS}', None, 0, None)
+
+
+def resume():
+    _mci(f'resume {_MCI_ALIAS}', None, 0, None)
 
 
 def speak(text: str, character: str = "yoda") -> str:
@@ -81,10 +88,17 @@ def _speak_sapi(text: str, character: str) -> str:
 
 
 def play(path: str):
-    """Воспроизвести файл через Windows MCI."""
+    """Воспроизвести файл через Windows MCI без блокировки потока."""
     def _play():
         stop()
         _mci(f'open "{path}" alias {_MCI_ALIAS}', None, 0, None)
-        _mci(f'play {_MCI_ALIAS} wait', None, 0, None)
+        _mci(f'play {_MCI_ALIAS}', None, 0, None)  # без wait — иначе stop/pause не работают
+        import time
+        buf = ctypes.create_unicode_buffer(128)
+        while True:
+            _mci(f'status {_MCI_ALIAS} mode', buf, 127, None)
+            if buf.value not in ('playing', 'paused'):
+                break
+            time.sleep(0.15)
         _mci(f'close {_MCI_ALIAS}', None, 0, None)
     threading.Thread(target=_play, daemon=True).start()

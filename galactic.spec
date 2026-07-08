@@ -20,6 +20,8 @@ a = Analysis(
         'customtkinter',
         'PIL',
         'PIL._tkinter_finder',
+        'PIL.ImageTk',
+        'PIL.Image',
         'edge_tts',
         'httpx',
         'requests',

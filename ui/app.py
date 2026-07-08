@@ -6,9 +6,10 @@ from tkinter import filedialog, messagebox
 import customtkinter as ctk
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-from pdf_parser import load_pdf, extract_paragraphs
+from pdf_parser import load_pdf, extract_paragraphs, extract_chapter_images
 from ai_analyzer import analyze_chapter, ask_character, CHARACTERS
-from tts.voice import speak, play
+from tts.voice import speak, play, pause, resume
+from ui.debate_window import open_debate
 
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("dark-blue")
@@ -60,8 +61,12 @@ class GalacticAcademy(ctk.CTk):
         self.active_char = "yoda"
         ctk.CTkButton(q_frame, text="Спросить", command=self._ask_question,
                       width=110, height=36).pack(side="left")
-        ctk.CTkButton(q_frame, text="⏹", command=self._stop_voice,
-                      width=36, height=36, fg_color="#555555", hover_color="#333333").pack(side="left", padx=(6, 0))
+        ctk.CTkButton(q_frame, text="⏹ Стоп", command=self._stop_voice,
+                      width=76, height=36, fg_color="#555555", hover_color="#333333").pack(side="left", padx=(6, 0))
+        self._paused = False
+        self._pause_btn = ctk.CTkButton(q_frame, text="⏸ Пауза", command=self._toggle_pause,
+                      width=80, height=36, fg_color="#3a5a7a", hover_color="#2a4a6a")
+        self._pause_btn.pack(side="left", padx=(4, 0))
         self.question_entry.bind("<Return>", lambda e: self._ask_question())
 
         # Основная область
@@ -106,20 +111,26 @@ class GalacticAcademy(ctk.CTk):
         right.pack(side="right", fill="y", padx=(10, 0))
         right.pack_propagate(False)
 
-        ctk.CTkLabel(right, text="👾 Эксперты", font=("Arial", 14, "bold")).pack(pady=4)
+        ctk.CTkLabel(right, text="👾 Эксперты", font=("Arial", 13, "bold")).pack(pady=(2, 1))
+        ctk.CTkButton(right, text="⚔️ Дебаты", command=self._open_debate,
+                      fg_color="#5a3e8a", hover_color="#3d2a60",
+                      width=180, height=30).pack(padx=10, pady=(0, 1))
+        ctk.CTkButton(right, text="🖼 Картинки", command=self._show_images,
+                      fg_color="#4a4a1a", hover_color="#333310",
+                      width=180, height=30).pack(padx=10, pady=(0, 2))
         for char_id, char in CHARACTERS.items():
             btn = ctk.CTkButton(
                 right, text=f"{char['emoji']} {char['name']}",
                 fg_color=CHAR_COLORS[char_id],
                 hover_color=CHAR_COLORS[char_id],
                 command=lambda c=char_id: self._ask_expert(c),
-                width=180, height=40
+                width=180, height=33
             )
-            btn.pack(padx=10, pady=(3, 0))
+            btn.pack(padx=10, pady=(1, 0))
             ctk.CTkLabel(
                 right, text=char.get("hint", ""),
-                font=("Arial", 10), text_color="#888888"
-            ).pack(pady=(1, 2))
+                font=("Arial", 9), text_color="#888888"
+            ).pack(pady=(0, 0))
 
 
     def _load_pdf(self):
@@ -228,15 +239,102 @@ class GalacticAcademy(ctk.CTk):
                       font=("Arial", 13), padx=12, pady=12, borderwidth=0)
         txt.pack(fill="both", expand=True, padx=10)
         txt.insert("1.0", response)
+        win.update_idletasks()
         txt.config(state="disabled")
         tk.Button(win, text="Закрыть", command=win.destroy,
                   bg="#1f6aa5", fg="white", font=("Arial", 12),
                   relief="flat", padx=20, pady=6).pack(pady=10)
         threading.Thread(target=self._play_voice, args=(response, char_id), daemon=True).start()
 
+    def _show_images(self):
+        if not self.chapters:
+            messagebox.showwarning("Нет PDF", "Сначала загрузи PDF!")
+            return
+        ch = self.chapters[self.current_chapter]
+        pdf_path = ch.get("_pdf_path", "")
+        if not pdf_path:
+            messagebox.showwarning("Нет пути", "Путь к PDF не сохранён — перезагрузи файл.")
+            return
+        threading.Thread(target=self._load_images_bg, args=(ch,), daemon=True).start()
+
+    def _load_images_bg(self, ch):
+        try:
+            imgs = extract_chapter_images(
+                ch["_pdf_path"], ch.get("page_start", 1), ch.get("page_end", 9999)
+            )
+        except Exception as e:
+            self.after(0, lambda: messagebox.showerror("Ошибка", str(e)))
+            return
+        self.after(0, lambda: self._open_images_popup(imgs, ch["title"]))
+
+    def _open_images_popup(self, imgs: list, title: str):
+        if not imgs:
+            messagebox.showinfo("Картинки", "В этой главе нет изображений.")
+            return
+        import io
+        from PIL import Image, ImageTk
+
+        win = tk.Toplevel(self)
+        win.title(f"🖼 {title[:50]}")
+        win.geometry("820x650")
+        win.configure(bg="#1c1c1c")
+        win.attributes("-topmost", True)
+
+        tk.Label(win, text=f"🖼 Картинки — {title[:60]}",
+                 bg="#1c1c1c", fg="white", font=("Arial", 13, "bold")).pack(pady=8)
+        tk.Label(win, text=f"Найдено: {len(imgs)} изображений",
+                 bg="#1c1c1c", fg="#888888", font=("Arial", 10)).pack()
+
+        outer = tk.Frame(win, bg="#1c1c1c")
+        outer.pack(fill="both", expand=True, padx=8, pady=8)
+        canvas = tk.Canvas(outer, bg="#1c1c1c", highlightthickness=0)
+        sb = tk.Scrollbar(outer, orient="vertical", command=canvas.yview)
+        scroll_f = tk.Frame(canvas, bg="#1c1c1c")
+        scroll_f.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.create_window((0, 0), window=scroll_f, anchor="nw", width=780)
+        canvas.configure(yscrollcommand=sb.set)
+        canvas.pack(side="left", fill="both", expand=True)
+        sb.pack(side="right", fill="y")
+        canvas.bind_all("<MouseWheel>",
+                        lambda e: canvas.yview_scroll(int(-1 * e.delta / 120), "units"))
+
+        self._img_refs = []   # держим ссылки чтобы GC не удалил
+        MAX_W = 760
+        for raw in imgs:
+            img = Image.open(io.BytesIO(raw))
+            w, h = img.size
+            if w > MAX_W:
+                img = img.resize((MAX_W, int(h * MAX_W / w)), Image.LANCZOS)
+            photo = ImageTk.PhotoImage(img)
+            self._img_refs.append(photo)
+            tk.Label(scroll_f, image=photo, bg="#1c1c1c").pack(pady=6)
+
+        tk.Button(win, text="Закрыть", command=win.destroy,
+                  bg="#444444", fg="white", font=("Arial", 11),
+                  relief="flat", padx=20, pady=6).pack(pady=(0, 8))
+
+    def _open_debate(self):
+        if not self.chapters:
+            messagebox.showwarning("Нет PDF", "Сначала загрузи PDF!")
+            return
+        text = self.chapters[self.current_chapter]["text"]
+        open_debate(self, text)
+
     def _stop_voice(self):
         from tts.voice import stop
         stop()
+        self._paused = False
+        self._pause_btn.configure(text="⏸ Пауза")
+
+    def _toggle_pause(self):
+        if self._paused:
+            resume()
+            self._paused = False
+            self._pause_btn.configure(text="⏸ Пауза")
+        else:
+            pause()
+            self._paused = True
+            self._pause_btn.configure(text="▶ Далее")
 
     def _play_voice(self, text, char_id):
         try:
@@ -246,7 +344,33 @@ class GalacticAcademy(ctk.CTk):
             pass
 
 
+def _global_exception_handler(exc_type, exc_value, exc_tb):
+    import traceback
+    msg = "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
+    try:
+        messagebox.showerror("Ошибка приложения", f"{exc_type.__name__}: {exc_value}\n\nПодробности в консоли.")
+    except Exception:
+        pass
+    sys.__excepthook__(exc_type, exc_value, exc_tb)
+
+
+def _thread_exception_handler(args):
+    if args.exc_type is SystemExit:
+        return
+    try:
+        root = tk._default_root
+        if root:
+            root.after(0, lambda: messagebox.showerror(
+                "Ошибка потока",
+                f"{args.exc_type.__name__}: {args.exc_value}"
+            ))
+    except Exception:
+        pass
+
+
 def main():
+    sys.excepthook = _global_exception_handler
+    threading.excepthook = _thread_exception_handler
     app = GalacticAcademy()
     app.mainloop()
 
